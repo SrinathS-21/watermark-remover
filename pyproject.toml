@@ -1,7 +1,7 @@
 [project]
 name = "watermark-remover"
 version = "2.0.0"
-description = "Automatic watermark removal — YOLO11x + SAM + LaMa multi-pass pipeline"
+description = "Automatic watermark removal — YOLOv8 + SAM + LaMa multi-pass pipeline"
 requires-python = ">=3.10"
 dependencies = [
     "huggingface-hub>=1.5.0",

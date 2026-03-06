@@ -143,8 +143,7 @@ def process_batch(
     use_sam: bool = True,
     max_passes: int = DEFAULT_MAX_PASSES,
 ) -> list[dict]:
-    """
-    Process all images in a directory with the YOLO11x + SAM + LaMa pipeline.
+    """Process all images in a directory with the YOLOv8 + SAM + LaMa pipeline.
 
     Args:
         input_dir: directory containing input images
@@ -207,7 +206,7 @@ def process_batch(
     images_with_wm = sum(1 for r in results if r["detections"] > 0)
 
     logger.info("=" * 60)
-    logger.info("BATCH COMPLETE (YOLO11x + %s + LaMa)",
+    logger.info("BATCH COMPLETE (YOLOv8 + %s + LaMa)",
                 "SAM" if sam_predictor else "bbox")
     logger.info("  Total images processed : %d", total)
     logger.info("  Images with watermarks : %d", images_with_wm)

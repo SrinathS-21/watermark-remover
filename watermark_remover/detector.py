@@ -13,7 +13,7 @@ def detect_watermarks(
     confidence: float = DEFAULT_CONFIDENCE,
 ) -> list[dict]:
     """
-    Run YOLO11x inference on a single image.
+    Run YOLOv8 inference on a single image.
 
     Returns list of detections:
         [{"bbox": [x1, y1, x2, y2], "confidence": float, "label": str}, ...]

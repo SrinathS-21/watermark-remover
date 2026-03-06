@@ -15,17 +15,17 @@ logger = logging.getLogger(__name__)
 
 
 def load_yolo_model(device: str = "cpu") -> YOLO:
-    """Load the YOLO11x watermark detection model (auto-downloads if missing)."""
-    logger.info("Loading YOLO11x watermark detection model...")
+    """Load the YOLOv8 watermark detection model (auto-downloads if missing)."""
+    logger.info("Loading YOLOv8 watermark detection model...")
     if not os.path.exists(YOLO_MODEL):
         from huggingface_hub import hf_hub_download
-        logger.info("Downloading YOLO11x weights from HuggingFace...")
+        logger.info("Downloading YOLOv8 weights from HuggingFace...")
         models_dir = os.path.normpath(
             os.path.join(os.path.dirname(__file__), "..", "models")
         )
         hf_hub_download(YOLO_REPO, YOLO_FILENAME, local_dir=models_dir)
     model = YOLO(YOLO_MODEL)
-    logger.info("YOLO11x model loaded. Classes: %s", model.names)
+    logger.info("YOLOv8 model loaded. Classes: %s", model.names)
     return model
 
 
