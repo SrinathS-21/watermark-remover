@@ -1,0 +1,27 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Model weights
+*.pt
+*.pth
+*.pkl
+*.onnx
+
+# Output directories
+cleaned_images/
+detected_watermarks/
+
+# Sample data (too large for repo)
+product sample images/
+
+# OS
+Thumbs.db
+.DS_Store
