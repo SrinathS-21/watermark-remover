@@ -16,8 +16,6 @@ wheels/
 *.onnx
 
 # Output directories
-cleaned_images_v2/annotated/
-cleaned_images_v2/masks/
 
 # Phase 1 outputs (belong to master branch)
 cleaned_images/
