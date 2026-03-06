@@ -1,9 +1,10 @@
 """
-Automatic Watermark Remover — Production Pipeline
+Automatic Watermark Remover — Production Pipeline (v2)
 
-Pipeline: YOLO Detection → Mask Generation → LaMa Inpainting
+Pipeline: YOLO11x Detection → SAM Pixel-Precise Mask → LaMa Inpainting
 Uses:
-  - mnemic/watermarks_yolov8 (YOLOv8) for watermark detection
+  - corzent/yolo11x_watermark_detection (YOLO11x) for watermark detection
+  - SAM ViT-B (Segment Anything) for pixel-precise mask refinement
   - big-lama (LaMa) via simple-lama-inpainting for watermark removal
 """
 
@@ -16,10 +17,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import torch
 from PIL import Image
 from ultralytics import YOLO
-from huggingface_hub import hf_hub_download
 from simple_lama_inpainting import SimpleLama
+from segment_anything import sam_model_registry, SamPredictor
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -35,22 +37,38 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
-YOLO_REPO = "mnemic/watermarks_yolov8"
-YOLO_FILENAME = "watermarks_s_yolov8_v1.pt"
+YOLO_MODEL = os.path.join(os.path.dirname(__file__), "models", "best.pt")
+SAM_CHECKPOINT = os.path.join(os.path.dirname(__file__), "models", "sam_vit_b_01ec64.pth")
+SAM_MODEL_TYPE = "vit_b"
 DEFAULT_CONFIDENCE = 0.25
 DEFAULT_MASK_PADDING = 10
+DEFAULT_MAX_PASSES = 2
 
 
 # ---------------------------------------------------------------------------
 # Model Loading
 # ---------------------------------------------------------------------------
-def load_yolo_model() -> YOLO:
-    """Download and load the YOLOv8 watermark detection model."""
-    logger.info("Loading YOLOv8 watermark detection model...")
-    model_path = hf_hub_download(repo_id=YOLO_REPO, filename=YOLO_FILENAME)
-    model = YOLO(model_path)
-    logger.info("YOLOv8 model loaded. Classes: %s", model.names)
+def load_yolo_model(device: str = "cpu") -> YOLO:
+    """Load the YOLO11x watermark detection model."""
+    logger.info("Loading YOLO11x watermark detection model...")
+    if not os.path.exists(YOLO_MODEL):
+        from huggingface_hub import hf_hub_download
+        logger.info("Downloading YOLO11x weights from HuggingFace...")
+        hf_hub_download("corzent/yolo11x_watermark_detection", "best.pt",
+                        local_dir=os.path.join(os.path.dirname(__file__), "models"))
+    model = YOLO(YOLO_MODEL)
+    logger.info("YOLO11x model loaded. Classes: %s", model.names)
     return model
+
+
+def load_sam_model(device: str = "cpu") -> SamPredictor:
+    """Load SAM ViT-B for pixel-precise mask generation."""
+    logger.info("Loading SAM ViT-B model...")
+    sam = sam_model_registry[SAM_MODEL_TYPE](checkpoint=SAM_CHECKPOINT)
+    sam.to(device=device)
+    predictor = SamPredictor(sam)
+    logger.info("SAM model loaded.")
+    return predictor
 
 
 def load_lama_model() -> SimpleLama:
@@ -91,18 +109,13 @@ def detect_watermarks(
     return detections
 
 
-def create_mask(
+def create_mask_bbox(
     image_shape: tuple[int, int],
     detections: list[dict],
     padding: int = DEFAULT_MASK_PADDING,
 ) -> np.ndarray:
     """
-    Create a binary inpainting mask from YOLO detections.
-
-    Args:
-        image_shape: (height, width) of the original image
-        detections: list of detection dicts with "bbox" key
-        padding: pixels to expand each bbox for cleaner inpainting edges
+    Create a binary inpainting mask from YOLO detections (bbox fallback).
 
     Returns:
         Binary mask (uint8): 0 = keep, 255 = inpaint
@@ -112,12 +125,52 @@ def create_mask(
 
     for det in detections:
         x1, y1, x2, y2 = det["bbox"]
-        # Apply padding and clamp to image bounds
         x1 = max(0, int(x1) - padding)
         y1 = max(0, int(y1) - padding)
         x2 = min(w, int(x2) + padding)
         y2 = min(h, int(y2) + padding)
         cv2.rectangle(mask, (x1, y1), (x2, y2), 255, thickness=-1)
+
+    return mask
+
+
+def create_mask_sam(
+    sam_predictor: SamPredictor,
+    image_rgb: np.ndarray,
+    detections: list[dict],
+    padding: int = DEFAULT_MASK_PADDING,
+) -> np.ndarray:
+    """
+    Create a pixel-precise inpainting mask using SAM with bbox prompts.
+
+    Each YOLO bbox is fed to SAM as a box prompt to get a tight segmentation
+    mask around the watermark, then dilated by `padding` pixels.
+
+    Returns:
+        Binary mask (uint8): 0 = keep, 255 = inpaint
+    """
+    h, w = image_rgb.shape[:2]
+    mask = np.zeros((h, w), dtype=np.uint8)
+    sam_predictor.set_image(image_rgb)
+
+    for det in detections:
+        x1, y1, x2, y2 = det["bbox"]
+        input_box = np.array([x1, y1, x2, y2])
+        masks, scores, _ = sam_predictor.predict(
+            box=input_box[None, :],
+            multimask_output=True,
+        )
+        # Pick the mask with highest score
+        best_idx = int(np.argmax(scores))
+        sam_mask = masks[best_idx].astype(np.uint8) * 255
+        mask = cv2.bitwise_or(mask, sam_mask)
+
+    # Dilate to cover edges
+    if padding > 0:
+        kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (padding * 2 + 1, padding * 2 + 1)
+        )
+        mask = cv2.dilate(mask, kernel, iterations=1)
 
     return mask
 
@@ -155,15 +208,19 @@ def process_image(
     padding: int = DEFAULT_MASK_PADDING,
     save_mask: bool = False,
     save_annotated: bool = False,
+    sam_predictor: SamPredictor | None = None,
+    max_passes: int = DEFAULT_MAX_PASSES,
 ) -> dict:
     """
-    Full pipeline for a single image: detect → mask → inpaint → save.
+    Full pipeline for a single image with multi-pass support:
+        Pass 1: detect → SAM mask → inpaint
+        Pass 2+: re-detect on inpainted result → inpaint residuals
 
     Returns a summary dict with detection count, output path, etc.
     """
     image_name = os.path.basename(image_path)
 
-    # 1. Detect
+    # 1. Initial detection
     detections = detect_watermarks(yolo_model, image_path, confidence)
 
     if not detections:
@@ -174,7 +231,7 @@ def process_image(
         return {"image": image_name, "detections": 0, "output": out_path}
 
     logger.info(
-        "  [%s] Detected %d watermark(s): %s",
+        "  [%s] Pass 1: Detected %d watermark(s): %s",
         image_name,
         len(detections),
         ", ".join(f'{d["label"]}({d["confidence"]:.2f})' for d in detections),
@@ -184,14 +241,49 @@ def process_image(
     image = Image.open(image_path).convert("RGB")
     img_array = np.array(image)
     h, w = img_array.shape[:2]
+    all_detections = list(detections)
 
-    # 3. Create mask
-    mask = create_mask((h, w), detections, padding)
+    # 3. Create mask (SAM pixel-precise or bbox fallback)
+    if sam_predictor is not None:
+        mask = create_mask_sam(sam_predictor, img_array, detections, padding)
+        logger.info("  [%s] SAM pixel-precise mask generated.", image_name)
+    else:
+        mask = create_mask_bbox((h, w), detections, padding)
 
     # 4. Inpaint
     result = inpaint_image(lama_model, image, mask)
 
-    # 5. Save outputs
+    # 5. Multi-pass: re-detect on inpainted result and fix residuals
+    for pass_num in range(2, max_passes + 1):
+        result_array = np.array(result)
+        # Save temp file for YOLO (it needs a file path)
+        temp_path = os.path.join(output_dir, f"_temp_{image_name}")
+        result.save(temp_path)
+        residual_detections = detect_watermarks(yolo_model, temp_path, confidence)
+        os.remove(temp_path)
+
+        if not residual_detections:
+            logger.info("  [%s] Pass %d: Clean — no residuals.", image_name, pass_num)
+            break
+
+        logger.info(
+            "  [%s] Pass %d: Found %d residual watermark(s), re-inpainting.",
+            image_name, pass_num, len(residual_detections),
+        )
+        all_detections.extend(residual_detections)
+
+        if sam_predictor is not None:
+            residual_mask = create_mask_sam(
+                sam_predictor, result_array, residual_detections, padding
+            )
+        else:
+            residual_mask = create_mask_bbox(
+                (h, w), residual_detections, padding
+            )
+        mask = cv2.bitwise_or(mask, residual_mask)
+        result = inpaint_image(lama_model, result, residual_mask)
+
+    # 6. Save outputs
     out_path = os.path.join(output_dir, image_name)
     result.save(out_path)
 
@@ -204,7 +296,7 @@ def process_image(
         annotated_dir = os.path.join(output_dir, "annotated")
         os.makedirs(annotated_dir, exist_ok=True)
         annotated = img_array.copy()
-        for det in detections:
+        for det in all_detections:
             x1, y1, x2, y2 = [int(v) for v in det["bbox"]]
             cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
             label_text = f'{det["label"]} {det["confidence"]:.2f}'
@@ -216,9 +308,9 @@ def process_image(
 
     return {
         "image": image_name,
-        "detections": len(detections),
+        "detections": len(all_detections),
         "output": out_path,
-        "details": detections,
+        "details": all_detections,
     }
 
 
@@ -233,6 +325,8 @@ def process_batch(
     save_mask: bool = False,
     save_annotated: bool = False,
     device: str = "cpu",
+    use_sam: bool = True,
+    max_passes: int = DEFAULT_MAX_PASSES,
 ) -> list[dict]:
     """
     Process all images in a directory.
@@ -245,6 +339,8 @@ def process_batch(
         save_mask: also save the binary masks
         save_annotated: also save images with detection bboxes drawn
         device: 'cpu' or 'cuda'
+        use_sam: use SAM for pixel-precise masks (else bbox fallback)
+        max_passes: max detection-inpainting passes per image
 
     Returns:
         List of result dicts from process_image()
@@ -269,8 +365,16 @@ def process_batch(
     os.makedirs(output_dir, exist_ok=True)
 
     # Load models
-    yolo_model = load_yolo_model()
+    yolo_model = load_yolo_model(device)
     lama_model = load_lama_model()
+    sam_predictor = None
+    if use_sam and os.path.exists(SAM_CHECKPOINT):
+        sam_predictor = load_sam_model(device)
+    elif use_sam:
+        logger.warning(
+            "SAM checkpoint not found at %s — falling back to bbox masks.",
+            SAM_CHECKPOINT,
+        )
 
     # Process
     results = []
@@ -283,6 +387,7 @@ def process_batch(
             yolo_model, lama_model, str(img_path), output_dir,
             confidence=confidence, padding=padding,
             save_mask=save_mask, save_annotated=save_annotated,
+            sam_predictor=sam_predictor, max_passes=max_passes,
         )
         results.append(result)
 
@@ -292,10 +397,12 @@ def process_batch(
     total_detections = sum(r["detections"] for r in results)
     images_with_wm = sum(1 for r in results if r["detections"] > 0)
     logger.info("=" * 60)
-    logger.info("BATCH COMPLETE")
+    logger.info("BATCH COMPLETE (YOLO11x + %s + LaMa)",
+                "SAM" if sam_predictor else "bbox")
     logger.info("  Total images processed : %d", total)
     logger.info("  Images with watermarks : %d", images_with_wm)
     logger.info("  Total watermarks found : %d", total_detections)
+    logger.info("  Max passes per image   : %d", max_passes)
     logger.info("  Time elapsed           : %.1fs", elapsed)
     logger.info("  Output directory       : %s", output_dir)
     logger.info("=" * 60)
@@ -308,7 +415,7 @@ def process_batch(
 # ---------------------------------------------------------------------------
 def main():
     parser = argparse.ArgumentParser(
-        description="Automatic Watermark Remover — YOLO Detection + LaMa Inpainting",
+        description="Automatic Watermark Remover v2 — YOLO11x + SAM + LaMa",
     )
     parser.add_argument(
         "--input", "-i", required=True,
@@ -338,6 +445,14 @@ def main():
         "--device", default="cpu", choices=["cpu", "cuda"],
         help="Device for inference (default: cpu)",
     )
+    parser.add_argument(
+        "--no-sam", action="store_true",
+        help="Disable SAM mask refinement (use bbox masks instead)",
+    )
+    parser.add_argument(
+        "--max-passes", type=int, default=DEFAULT_MAX_PASSES,
+        help=f"Max detection-inpainting passes per image (default: {DEFAULT_MAX_PASSES})",
+    )
     args = parser.parse_args()
 
     process_batch(
@@ -348,6 +463,8 @@ def main():
         save_mask=args.save_mask,
         save_annotated=args.save_annotated,
         device=args.device,
+        use_sam=not args.no_sam,
+        max_passes=args.max_passes,
     )
 
 

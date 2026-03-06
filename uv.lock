@@ -1395,6 +1395,15 @@ wheels = [
 ]
 
 [[package]]
+name = "segment-anything"
+version = "1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/4f/88/7725f418f2bb4a7ac2e5e8295fbbca2900c70c8fe5ba48b3aff5788af9a2/segment_anything-1.0.tar.gz", hash = "sha256:ed0c9f6fb07bbef9c6238a7028a13c8272f1ba6b6305ca73e3e064266503736b", size = 31191, upload-time = "2023-04-06T18:04:40.816Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/75/77/8e0c16abf151a1dd076b562febc0da2ecf1132b0b41826087af96f101f42/segment_anything-1.0-py3-none-any.whl", hash = "sha256:86f67d417a915823c3302098effe9008b688945772517310956bb49de0e7f02e", size = 36560, upload-time = "2023-04-06T18:04:38.834Z" },
+]
+
+[[package]]
 name = "setuptools"
 version = "82.0.0"
 source = { registry = "https://pypi.org/simple" }
@@ -1667,6 +1676,7 @@ version = "0.1.0"
 source = { virtual = "." }
 dependencies = [
     { name = "huggingface-hub" },
+    { name = "segment-anything" },
     { name = "simple-lama-inpainting" },
     { name = "ultralytics" },
 ]
@@ -1674,6 +1684,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "huggingface-hub", specifier = ">=1.5.0" },
+    { name = "segment-anything", specifier = ">=1.0" },
     { name = "simple-lama-inpainting", specifier = ">=0.1.2" },
     { name = "ultralytics", specifier = ">=8.4.19" },
 ]
