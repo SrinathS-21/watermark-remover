@@ -212,7 +212,8 @@ uv add segment-anything
 | Area | Phase 2 | Phase 3 |
 |------|---------|---------|
 | Pass 1 detection | YOLOv8-small (22.5 MB) | YOLO11x (114 MB, 1280px) — higher recall |
-| Pass 2 detection | YOLOv8 again | YOLOv8 — tight bbox on clean background |
+| Pass 2 detection | YOLOv8 again | YOLOv8 — always runs as guaranteed fallback |
+| YOLO11x miss handling | N/A | YOLOv8 pass 2 catches what YOLO11x scores 0.0 on |
 | SAM in pass 2 | Prompted on original image | Prompted on post-inpaint clean result |
 | SAM bleeding | Can occur on complex original | Eliminated — plain background in pass 2 |
 
@@ -224,6 +225,8 @@ Phase 2 used YOLOv8 for both passes. While effective, it had two limitations:
 2. **SAM bleeding on pass 2.** When YOLOv8's bounding box is wide on the original image, SAM sometimes segments product features instead of the watermark (since the box overlaps product texture).
 
 Phase 3 addresses both: YOLO11x sweeps the original image with maximum recall, and after LaMa cleans it, YOLOv8 runs on the inpainted result where the background is plain — giving SAM a clean, unambiguous prompt.
+
+**Key design detail:** YOLOv8 pass 2 always runs — even when YOLO11x finds nothing. This is critical because the two models have complementary blind spots. For example, `AutomaticFeedingTailStock` ("A. B. Machine tools / Rajkot" text watermark) scores conf=0.0 with YOLO11x at any threshold but is confidently detected by YOLOv8 at 0.45. Without the unconditional fallback, that image would be silently skipped.
 
 ### Model Downloads
 
@@ -257,14 +260,14 @@ print('SAM ViT-B ready.')
 
 | Metric | Phase 2 | Phase 3 |
 |--------|---------|---------|
-| Images with watermarks | 7 | 6 |
-| Total watermarks found | 11 | 21 |
-| Pass 1 detections | 11 (YOLOv8) | 20 (YOLO11x) |
-| Pass 2 residuals fixed | 0 | 1 (BitterGourd) |
-| Processing time | 68.9s | 119.0s |
-| Mask type | Pixel-precise (SAM) | Pixel-precise (SAM) |
+| Images with watermarks | 7 | **7** |
+| Total watermarks found | 11 | **22** |
+| Pass 1 detections (YOLO11x) | N/A | 20 across 6 images |
+| Pass 2 detections (YOLOv8) | 11 | 2 (BitterGourd residual + AutomaticFeedingTailStock fallback) |
+| Processing time | 68.9s | 116.1s |
+| Mask type | Pixel-precise (SAM) | Pixel-precise (SAM, combined across both passes) |
 
-> YOLO11x's higher recall in pass 1 found significantly more watermark instances (20 vs 11). The one BitterGourd residual caught by YOLOv8 in pass 2 demonstrates the dual-model strategy working as designed — YOLO11x cleaned the main region, and YOLOv8 caught the surviving trace on the clean background.
+> YOLO11x found 20 watermark instances across 6 images in pass 1. YOLOv8 ran on all 16 images in pass 2 as a safety net — catching the BitterGourd residual (missed by YOLO11x's first pass) and the `AutomaticFeedingTailStock` watermark that YOLO11x is completely blind to. Result: all 7 watermarked images correctly processed.
 
 ---
 
@@ -381,10 +384,10 @@ cleaned_images/
 ============================================================
 BATCH COMPLETE (YOLO11x + YOLOv8 + SAM + LaMa)
   Total images processed : 16
-  Images with watermarks : 6
-  Total watermarks found : 21
+  Images with watermarks : 7
+  Total watermarks found : 22
   Max passes per image   : 2
-  Time elapsed           : 119.0s
+  Time elapsed           : 116.1s
   Output directory       : cleaned_images_v3
 ============================================================
 ```
@@ -450,7 +453,7 @@ Watermark Remover/
 |--------|--------|------|-----------|
 | Phase 1 — CPU | 16 | 17.4s | 1.1s |
 | Phase 2 — CPU | 16 | 68.9s | 4.3s |
-| Phase 3 — CPU | 16 | 119.0s | 7.4s |
+| Phase 3 — CPU | 16 | 116.1s | 7.3s |
 | Phase 3 — GPU (estimated) | 16 | ~15–20s | ~1–1.3s |
 
 > Phase 3 adds YOLO11x on top of Phase 2, adding ~50s on CPU (two model loads + larger 1280px inference). On GPU both detection passes drop under 1s each.
