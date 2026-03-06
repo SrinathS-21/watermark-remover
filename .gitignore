@@ -16,11 +16,14 @@ wheels/
 *.onnx
 
 # Output directories
+cleaned_images_v2/annotated/
+cleaned_images_v2/masks/
+
+# Phase 1 outputs (belong to master branch)
 cleaned_images/
-detected_watermarks/
 
 # Sample data (too large for repo)
-product sample images/
+# product sample images/
 
 # OS
 Thumbs.db
