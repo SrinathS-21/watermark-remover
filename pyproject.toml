@@ -1,7 +1,7 @@
 [project]
 name = "watermark-remover"
-version = "0.1.0"
-description = "Add your description here"
+version = "2.0.0"
+description = "Automatic watermark removal — YOLO11x + SAM + LaMa multi-pass pipeline"
 requires-python = ">=3.10"
 dependencies = [
     "huggingface-hub>=1.5.0",
@@ -9,3 +9,6 @@ dependencies = [
     "simple-lama-inpainting>=0.1.2",
     "ultralytics>=8.4.19",
 ]
+
+[project.scripts]
+watermark-remover = "watermark_remover.cli:main"
