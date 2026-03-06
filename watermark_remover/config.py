@@ -6,11 +6,18 @@ import os
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tiff"}
 
 # ---------------------------------------------------------------------------
-# YOLOv8 model (local path — auto-downloaded if missing)
+# YOLO11x model — Pass 1 (high recall: catches all watermarks)
 # ---------------------------------------------------------------------------
-YOLO_MODEL = os.path.join(os.path.dirname(__file__), "..", "models", "watermarks_s_yolov8_v1.pt")
-YOLO_REPO = "mnemic/watermarks_yolov8"
-YOLO_FILENAME = "watermarks_s_yolov8_v1.pt"
+YOLO11X_MODEL = os.path.join(os.path.dirname(__file__), "..", "models", "best.pt")
+YOLO11X_REPO = "corzent/yolo11x_watermark_detection"
+YOLO11X_FILENAME = "best.pt"
+
+# ---------------------------------------------------------------------------
+# YOLOv8 model — Pass 2 (precision: targets surviving residuals on clean bg)
+# ---------------------------------------------------------------------------
+YOLOV8_MODEL = os.path.join(os.path.dirname(__file__), "..", "models", "watermarks_s_yolov8_v1.pt")
+YOLOV8_REPO = "mnemic/watermarks_yolov8"
+YOLOV8_FILENAME = "watermarks_s_yolov8_v1.pt"
 
 # ---------------------------------------------------------------------------
 # SAM ViT-B checkpoint (local path)

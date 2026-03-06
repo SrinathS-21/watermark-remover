@@ -13,7 +13,7 @@ logging.basicConfig(
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Automatic Watermark Remover v2 — YOLOv8 + SAM + LaMa",
+        description="Automatic Watermark Remover v3 — YOLO11x + YOLOv8 + SAM + LaMa",
     )
     parser.add_argument("--input", "-i", required=True,
                         help="Input directory containing images")

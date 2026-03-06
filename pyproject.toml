@@ -1,7 +1,7 @@
 [project]
 name = "watermark-remover"
-version = "2.0.0"
-description = "Automatic watermark removal — YOLOv8 + SAM + LaMa multi-pass pipeline"
+version = "3.0.0"
+description = "Automatic watermark removal — YOLO11x + YOLOv8 + SAM + LaMa dual-pass pipeline"
 requires-python = ">=3.10"
 dependencies = [
     "huggingface-hub>=1.5.0",
@@ -12,3 +12,13 @@ dependencies = [
 
 [project.scripts]
 watermark-remover = "watermark_remover.cli:main"
+
+[tool.uv]
+package = true
+
+[tool.uv.sources]
+segment-anything = { git = "https://github.com/facebookresearch/segment-anything.git" }
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

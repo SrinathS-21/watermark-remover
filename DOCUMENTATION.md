@@ -2,7 +2,7 @@
 
 > A deep learning pipeline for automatically detecting and removing watermarks from product images.
 >
-> **Version:** 2.0.0 &nbsp;|&nbsp; **Python:** ≥ 3.10 &nbsp;|&nbsp; **Package Manager:** uv
+> **Version:** 3.0.0 &nbsp;|&nbsp; **Python:** ≥ 3.10 &nbsp;|&nbsp; **Package Manager:** uv
 
 ---
 
@@ -13,11 +13,12 @@
 3. [Pipeline Architecture](#3-pipeline-architecture)
 4. [Phase 1 — Basic Pipeline (YOLOv8 + LaMa)](#4-phase-1--basic-pipeline-yolov8--lama)
 5. [Phase 2 — Upgraded Pipeline (YOLOv8 + SAM + Multi-Pass)](#5-phase-2--upgraded-pipeline-yolov8--sam--multi-pass)
-6. [Installation & Setup](#6-installation--setup)
-7. [Usage](#7-usage)
-8. [CLI Reference](#8-cli-reference)
-9. [Project Structure](#9-project-structure)
-10. [Performance & Hardware](#10-performance--hardware)
+6. [Phase 3 — Dual-Model Pipeline (YOLO11x + YOLOv8 + SAM + LaMa)](#6-phase-3--dual-model-pipeline-yolo11x--yolov8--sam--lama)
+7. [Installation & Setup](#7-installation--setup)
+8. [Usage](#8-usage)
+9. [CLI Reference](#9-cli-reference)
+10. [Project Structure](#10-project-structure)
+11. [Performance & Hardware](#11-performance--hardware)
 
 ---
 
@@ -32,7 +33,7 @@ This project provides a fully automated, end-to-end pipeline that:
 - Removes watermarks using a high-quality deep inpainting model
 - Saves cleaned images with optional debug outputs (masks, annotated detections)
 
-The pipeline was built in two phases. Phase 1 established a working baseline; Phase 2 upgraded every stage for higher accuracy and cleaner output.
+The pipeline was built in three phases. Phase 1 established a working baseline; Phase 2 upgraded masking and added multi-pass; Phase 3 introduces a dual-model strategy for best-in-class recall and precision.
 
 ---
 
@@ -40,10 +41,10 @@ The pipeline was built in two phases. Phase 1 established a working baseline; Ph
 
 | Feature | Description |
 |---------|-------------|
-| **Smart Detection** | YOLOv8 trained specifically for watermark detection — lightweight (22.5 MB), reliable single-box-per-watermark detections |
+| **Dual-Model Detection** | YOLO11x (high recall) sweeps pass 1; YOLOv8 (tight boxes) checks residuals in pass 2 |
 | **Pixel-Precise Masks** | SAM (Segment Anything Model) traces the exact watermark boundary instead of using rectangles |
 | **High-Quality Inpainting** | LaMa (Large Mask Inpainting) reconstructs the background using surrounding context |
-| **Multi-Pass Removal** | After inpainting, re-runs detection to catch any residual traces |
+| **Two-Pass Removal** | Pass 1 catches all watermarks; pass 2 finds any residuals on the now-clean background |
 | **Batch Processing** | Processes entire folders automatically |
 | **Hardware Flexible** | Runs on CPU or GPU (`--device cuda`) |
 | **Debug Outputs** | Optional binary masks and annotated detection images |
@@ -52,7 +53,7 @@ The pipeline was built in two phases. Phase 1 established a working baseline; Ph
 
 ## 3. Pipeline Architecture
 
-The system follows a 5-stage deep learning pipeline.
+The system follows a dual-model two-pass deep learning pipeline.
 
 ### Stage Overview
 
@@ -61,51 +62,61 @@ Input Image
     │
     ▼
 ┌──────────────────────────────┐
-│  Stage 1: Detection          │
-│  YOLOv8 (640px)              │  → bounding boxes + confidence scores
+│  Pass 1 — Stage 1: Detection │
+│  YOLO11x (high recall)       │  → bounding boxes + confidence scores
 └──────────────┬───────────────┘
                │
                ▼
 ┌──────────────────────────────┐
-│  Stage 2: Mask Generation    │
+│  Pass 1 — Stage 2: Masking   │
 │  SAM ViT-B (pixel-precise)   │  → binary mask tracing watermark boundary
 └──────────────┬───────────────┘
                │
                ▼
 ┌──────────────────────────────┐
-│  Stage 3: Inpainting Pass 1  │
+│  Pass 1 — Stage 3: Inpaint   │
 │  LaMa big-lama               │  → watermark region reconstructed
 └──────────────┬───────────────┘
                │
                ▼
 ┌──────────────────────────────┐
-│  Stage 4: Residual Check     │
-│  YOLOv8 re-runs on result    │  → clean? done : run SAM + LaMa again
+│  Pass 2 — Stage 4: Detection │
+│  YOLOv8 (precision, tight)   │  → residual check on clean background
 └──────────────┬───────────────┘
                │
-               ▼
-┌──────────────────────────────┐
-│  Stage 5: Output             │
-│  Cleaned image               │  + optional masks/ + annotated/
-└──────────────────────────────┘
+         residuals?
+          yes │  no ──────────────┐
+               │                  │
+               ▼                  ▼
+┌──────────────────────────────┐  │
+│  Pass 2 — Stage 5: Masking   │  │
+│  SAM ViT-B                   │  │
+└──────────────┬───────────────┘  │
+               │                  │
+               ▼                  │
+┌──────────────────────────────┐  │
+│  Pass 2 — Stage 6: Inpaint   │  │
+│  LaMa big-lama               │  │
+└──────────────┬───────────────┘  │
+               │                  │
+               └──────────────────┘
+                        │
+                        ▼
+               ┌────────────────┐
+               │  Stage 7: Out  │  → cleaned image + masks/ + annotated/
+               └────────────────┘
 ```
 
-### Stage Details
+### Why Two Models?
 
-**Stage 1 — Watermark Detection**
-YOLOv8 scans the image and predicts bounding boxes around watermark regions. Each detection includes a bounding box, confidence score, and class label.
+| Model | Role | Strength |
+|-------|------|----------|
+| **YOLO11x** (114 MB, 1280px) | Pass 1 — initial sweep | High recall — catches every watermark even at low confidence |
+| **YOLOv8** (22.5 MB, 640px) | Pass 2 — residual check | Tight bounding boxes — clean prompt for SAM on plain background |
 
-**Stage 2 — Mask Generation**
-SAM ViT-B takes the YOLO bounding boxes as prompts and generates pixel-precise segmentation masks — tracing the exact watermark shape rather than a rectangle. Morphological dilation adds a small boundary buffer. Falls back to rectangular bbox masks if SAM is unavailable (`--no-sam`).
+YOLO11x is used first because it has the highest recall — it catches all watermarks on the original complex background, even if its bounding boxes are sometimes wide or fragmented. SAM and LaMa handle those detections correctly regardless of box tightness.
 
-**Stage 3 — Image Inpainting**
-LaMa reconstructs the masked region using surrounding context: removes watermark pixels, fills the region, and preserves textures and patterns.
-
-**Stage 4 — Residual Check**
-After inpainting, YOLOv8 runs again on the result. If any watermark is still detected, SAM + LaMa repeat for that region. Controlled by `--max-passes`.
-
-**Stage 5 — Output**
-Saves the cleaned image. Optionally saves binary masks (`--save-mask`) and annotated detection images (`--save-annotated`).
+After pass 1, the background is plain and uniform. YOLOv8 then runs on this clean result: its tight boxes give SAM a precise, unambiguous prompt with no product texture around the watermark — eliminating the SAM bleeding problem that occurred on the original image.
 
 ---
 
@@ -194,7 +205,70 @@ uv add segment-anything
 
 ---
 
-## 6. Installation & Setup
+## 6. Phase 3 — Dual-Model Pipeline (YOLO11x + YOLOv8 + SAM + LaMa)
+
+### What Changed
+
+| Area | Phase 2 | Phase 3 |
+|------|---------|---------|
+| Pass 1 detection | YOLOv8-small (22.5 MB) | YOLO11x (114 MB, 1280px) — higher recall |
+| Pass 2 detection | YOLOv8 again | YOLOv8 — tight bbox on clean background |
+| SAM in pass 2 | Prompted on original image | Prompted on post-inpaint clean result |
+| SAM bleeding | Can occur on complex original | Eliminated — plain background in pass 2 |
+
+### Motivation
+
+Phase 2 used YOLOv8 for both passes. While effective, it had two limitations:
+
+1. **YOLOv8 may miss low-confidence watermarks on the original complex background.** YOLO11x, with its 1280px input and deeper architecture, has higher recall on difficult cases.
+2. **SAM bleeding on pass 2.** When YOLOv8's bounding box is wide on the original image, SAM sometimes segments product features instead of the watermark (since the box overlaps product texture).
+
+Phase 3 addresses both: YOLO11x sweeps the original image with maximum recall, and after LaMa cleans it, YOLOv8 runs on the inpainted result where the background is plain — giving SAM a clean, unambiguous prompt.
+
+### Model Downloads
+
+```bash
+# YOLO11x weights (114 MB) — auto-downloaded by pipeline, or manually:
+uv run python -c "
+from huggingface_hub import hf_hub_download
+hf_hub_download('corzent/yolo11x_watermark_detection', 'best.pt', local_dir='models')
+print('YOLO11x ready.')
+"
+
+# YOLOv8 weights (22.5 MB) — auto-downloaded by pipeline, or manually:
+uv run python -c "
+from huggingface_hub import hf_hub_download
+hf_hub_download('mnemic/watermarks_yolov8', 'watermarks_s_yolov8_v1.pt', local_dir='models')
+print('YOLOv8 ready.')
+"
+
+# SAM ViT-B checkpoint (357.7 MB)
+uv run python -c "
+import urllib.request, os; os.makedirs('models', exist_ok=True)
+urllib.request.urlretrieve(
+    'https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth',
+    'models/sam_vit_b_01ec64.pth'
+)
+print('SAM ViT-B ready.')
+"
+```
+
+### Results vs Phase 2 (16 images, CPU)
+
+| Metric | Phase 2 | Phase 3 |
+|--------|---------|---------|
+| Images with watermarks | 7 | 6 |
+| Total watermarks found | 11 | 21 |
+| Pass 1 detections | 11 (YOLOv8) | 20 (YOLO11x) |
+| Pass 2 residuals fixed | 0 | 1 (BitterGourd) |
+| Processing time | 68.9s | 119.0s |
+| Mask type | Pixel-precise (SAM) | Pixel-precise (SAM) |
+
+> YOLO11x's higher recall in pass 1 found significantly more watermark instances (20 vs 11). The one BitterGourd residual caught by YOLOv8 in pass 2 demonstrates the dual-model strategy working as designed — YOLO11x cleaned the main region, and YOLOv8 caught the surviving trace on the clean background.
+
+---
+
+## 7. Installation & Setup
 
 ### Prerequisites
 
@@ -217,7 +291,14 @@ uv sync
 ### Download Models (first-time only)
 
 ```bash
-# YOLOv8 detection model (22.5 MB)
+# YOLO11x detection model — pass 1 (114 MB)
+uv run python -c "
+from huggingface_hub import hf_hub_download
+hf_hub_download('corzent/yolo11x_watermark_detection', 'best.pt', local_dir='models')
+print('YOLO11x ready.')
+"
+
+# YOLOv8 detection model — pass 2 (22.5 MB)
 uv run python -c "
 from huggingface_hub import hf_hub_download
 hf_hub_download('mnemic/watermarks_yolov8', 'watermarks_s_yolov8_v1.pt', local_dir='models')
@@ -236,6 +317,7 @@ print('SAM ViT-B ready.')
 ```
 
 > LaMa (`big-lama`) is downloaded automatically on first run and cached by PyTorch.
+> Both YOLO models are also auto-downloaded on first run if the weight files are missing.
 
 ---
 
@@ -244,13 +326,13 @@ print('SAM ViT-B ready.')
 ### Basic
 
 ```bash
-uv run python watermark_remover.py -i "product sample images" -o "cleaned_images"
+uv run watermark-remover -i "product sample images" -o "cleaned_images"
 ```
 
 ### With Debug Outputs
 
 ```bash
-uv run python watermark_remover.py \
+uv run watermark-remover \
     -i "product sample images" \
     -o "cleaned_images" \
     --confidence 0.25 \
@@ -263,13 +345,13 @@ uv run python watermark_remover.py \
 ### Without SAM (faster, rectangular masks)
 
 ```bash
-uv run python watermark_remover.py -i "input" -o "output" --no-sam
+uv run watermark-remover -i "input" -o "output" --no-sam
 ```
 
 ### GPU Mode
 
 ```bash
-uv run python watermark_remover.py -i "input" -o "output" --device cuda
+uv run watermark-remover -i "input" -o "output" --device cuda
 ```
 
 ### Common Adjustments
@@ -296,15 +378,15 @@ cleaned_images/
 ### Batch Summary (sample output)
 
 ```
-====================================================
-BATCH COMPLETE (YOLOv8 + SAM + LaMa)
+============================================================
+BATCH COMPLETE (YOLO11x + YOLOv8 + SAM + LaMa)
   Total images processed : 16
-  Images with watermarks : 7
-  Total watermarks found : 11
+  Images with watermarks : 6
+  Total watermarks found : 21
   Max passes per image   : 2
-  Time elapsed           : 68.9s
-  Output directory       : cleaned_images_v2
-====================================================
+  Time elapsed           : 119.0s
+  Output directory       : cleaned_images_v3
+============================================================
 ```
 
 ---
@@ -341,16 +423,17 @@ Watermark Remover/
 │
 ├── watermark_remover/             # Core package
 │   ├── __init__.py                # Public API exports
-│   ├── config.py                  # Constants, thresholds, model paths
-│   ├── models.py                  # YOLO, SAM, LaMa model loaders
+│   ├── config.py                  # Constants, thresholds, model paths (both YOLO models)
+│   ├── models.py                  # YOLO11x, YOLOv8, SAM, LaMa model loaders
 │   ├── detector.py                # YOLO inference → detection dicts
 │   ├── masker.py                  # SAM / bbox mask generation
 │   ├── inpainter.py               # LaMa inpainting wrapper
-│   ├── pipeline.py                # Orchestration: multi-pass detect + inpaint
+│   ├── pipeline.py                # Orchestration: dual-model two-pass detect + inpaint
 │   └── cli.py                     # argparse CLI with all flags
 │
 ├── models/                        # Model weights — git-ignored, download manually
-│   ├── watermarks_s_yolov8_v1.pt     # YOLOv8 watermark detector (22.5 MB)
+│   ├── best.pt                    # YOLO11x watermark detector (114 MB) — pass 1
+│   ├── watermarks_s_yolov8_v1.pt  # YOLOv8 watermark detector (22.5 MB) — pass 2
 │   └── sam_vit_b_01ec64.pth       # SAM ViT-B segmentation model (357.7 MB)
 │
 ├── DOCUMENTATION.md               # This file
@@ -367,16 +450,17 @@ Watermark Remover/
 |--------|--------|------|-----------|
 | Phase 1 — CPU | 16 | 17.4s | 1.1s |
 | Phase 2 — CPU | 16 | 68.9s | 4.3s |
-| Phase 2 — GPU (estimated) | 16 | ~8–12s | ~0.5–0.8s |
+| Phase 3 — CPU | 16 | 119.0s | 7.4s |
+| Phase 3 — GPU (estimated) | 16 | ~15–20s | ~1–1.3s |
 
-> Phase 2 is slower on CPU because SAM ViT-B adds ~3–4s per image. On GPU this drops under 1s.
+> Phase 3 adds YOLO11x on top of Phase 2, adding ~50s on CPU (two model loads + larger 1280px inference). On GPU both detection passes drop under 1s each.
 
 ### Recommendations
 
 | Hardware | Recommendation |
 |----------|---------------|
 | CPU | Use `--max-passes 1` and `--no-sam` for faster runs when quality is less critical |
-| GPU (CUDA) | Use `--device cuda` — full Phase 2 pipeline runs in near real-time |
+| GPU (CUDA) | Use `--device cuda` — full Phase 3 pipeline runs in near real-time |
 | Low memory | Reduce input image resolution before processing |
 
 ### Troubleshooting
@@ -387,10 +471,10 @@ Watermark Remover/
 | Too many false positives | Confidence too low | Raise `-c` (e.g., `0.5`) |
 | Watermark edges still visible | Mask too tight | Increase `-p` (e.g., `20`) |
 | Blurry inpainted area | Very large watermark | Expected for >30% coverage — LaMa limitation |
-| SAM model not found | Checkpoint missing | Re-run SAM download from Section 6 |
-| YOLO model not found | Weights missing | Re-run YOLO download from Section 6 |
+| SAM model not found | Checkpoint missing | Re-run SAM download from Section 7 |
+| YOLO model not found | Weights missing | Re-run YOLO download from Section 7 |
 | CUDA out of memory | Image too large for GPU | Fall back to `--device cpu` |
 
 ---
 
-*Pepagora Watermark Remover — Last updated: Phase 2 (v2.0.0).*
+*Pepagora Watermark Remover — Last updated: Phase 3 (v3.0.0).*
