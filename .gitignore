@@ -16,11 +16,11 @@ wheels/
 *.onnx
 
 # Output directories
-cleaned_images/
 detected_watermarks/
+cleaned_images_v2/
 
-# Sample data (too large for repo)
-product sample images/
+# Cleaned images (phase 1 outputs tracked)
+# cleaned_images/ is tracked on master
 
 # OS
 Thumbs.db
