@@ -161,13 +161,14 @@ Input Image → YOLOv8 Detection → Rectangular Mask → LaMa Inpainting → Ou
 
 ### Why YOLOv8 over YOLO11x
 
-During development, we evaluated YOLO11x (`corzent/yolo11x_watermark_detection`, 114 MB, 1280px input, mAP@50: 0.900) as a potential upgrade. However, testing on our dataset revealed a critical issue:
+During development, we first tried YOLO11x (`corzent/yolo11x_watermark_detection`, 114 MB, 1280px input, mAP@50: 0.900) as the detection model — expecting its higher benchmark score to translate to better results. Testing on our 16-image dataset revealed two problems:
 
-- **YOLO11x fragments single watermarks into multiple overlapping bounding boxes.** A single watermark that YOLOv8 correctly detects as one box gets split into 2–3 overlapping boxes by YOLO11x. This fragmentation creates overlapping SAM masks and degrades inpainting quality.
-- **YOLOv8 detects more unique watermarks.** In a side-by-side comparison with IoU-based box merging, YOLOv8 detected **9 unique watermarks across 7 images** vs YOLO11x's **8 across 6 images**.
-- **Simpler and more reliable.** YOLOv8's clean one-box-per-watermark behavior works better with the downstream SAM + LaMa pipeline.
+1. **YOLO11x missed watermarks.** In a side-by-side comparison, YOLOv8 detected **9 unique watermarks across 7 images** vs YOLO11x's **8 across 6 images**. Despite higher mAP on paper, YOLO11x had blind spots on our real-world images.
+2. **YOLO11x fragments single watermarks into overlapping boxes.** A single watermark that YOLOv8 correctly detects as one box gets split into 2–3 overlapping boxes by YOLO11x. When SAM is prompted with each box independently, it generates overlapping masks — and LaMa produces visible stitching artefacts trying to inpaint the patchwork.
 
-**Conclusion:** Higher mAP on a benchmark does not always mean better real-world performance. YOLOv8's detections are cleaner and more reliable for this pipeline.
+We switched back to YOLOv8. Its one-box-per-watermark behaviour was cleaner and it caught more unique watermarks in practice.
+
+**Finding:** Higher mAP on a benchmark does not always mean better real-world performance. The benchmark measures detection accuracy in isolation; in a multi-stage pipeline (YOLO → SAM → LaMa), clean bounding boxes matter more than benchmark recall.
 
 ### Model Downloads
 
@@ -202,6 +203,15 @@ uv add segment-anything
 | Residuals after pass 2 | N/A | 0 (all clean) |
 
 > Phase 2 detects the same watermarks as Phase 1 but removes them far more cleanly — SAM traces the exact watermark boundary and multi-pass ensures no residuals remain.
+
+### Limitations Discovered
+
+Phase 2 detection worked well — YOLOv8 reliably found watermarks and multi-pass confirmed all residuals were cleaned. However, SAM introduced a new problem:
+
+1. **SAM bleeding on complex backgrounds.** When YOLOv8's bounding box is wide or overlaps product texture, SAM sometimes segments product features instead of only the watermark. On the original image, the background is complex (product textures, patterns, text), so SAM's segmentation can "bleed" into surrounding content — producing masks that include non-watermark pixels.
+2. **YOLOv8's 640px input still misses small watermarks.** The lower-resolution input means some small or faint watermarks go undetected. And since YOLOv8 was used for both passes, any watermark missed in pass 1 was also likely missed in pass 2 — the same blind spot appearing twice.
+
+These two limitations — SAM bleeding on complex backgrounds and YOLOv8's detection ceiling — motivated the Phase 3 dual-model design: use YOLO11x (high recall, 1280px) for the first sweep on the original image, then use YOLOv8 on the post-inpaint result where the background is now plain — giving SAM a clean, unambiguous prompt with no bleeding.
 
 ---
 
